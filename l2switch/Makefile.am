@@ -5,7 +5,7 @@ bin_PROGRAMS =  \
 	l2switch
 
 l2switch_SOURCES =  \
-	main_l2switch.c
+	main_l2switch.cpp
 
 l2switch_LDADD = -L../libreg \
 	-L../librule \

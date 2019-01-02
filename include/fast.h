@@ -51,6 +51,11 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 
+// MODIFY 增加C++兼容性
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define REG_VERSION "1.1.3" /*Version of libreg*/
 #define RULE_VERSION "1.0.3"	/*Version of librule*/
 #define UA_VERSION "1.1.3"  /*Version of libua*/
@@ -155,4 +160,10 @@ void print_user_rule(struct fast_rule *rule);
 #define FAST_DBG(args...) do{printf(PFX);printf(args);}while(0)
 #define FAST_ERR(args...) do{printf(EPFX);printf(args);exit(0);}while(0)
 #endif
+
+// MODIFY 增加C++兼容性
+#ifdef __cplusplus
+}
+#endif
+
 #endif//__FAST_H__

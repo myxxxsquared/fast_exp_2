@@ -206,7 +206,7 @@ int find_dmac(u8 inport,u8 *dst_mac)
 /*转发单个包*/
 void pkt_send_normal(struct fast_packet *pkt,int pkt_len)
 {
-	printf("pkt_send_normal->%p,outport:%d,len:%d\n",pkt,pkt->um.outport,pkt_len);
+	printf("pkt_send_normal->%p,outport:%d,len:%d\n",pkt,(int)pkt->um.outport,pkt_len);
 	pkt->um.pktsrc = 1;/*报文来源为CPU输入*/
 	pkt->um.pktdst = 0;/*报文目的为硬件输出*/
 	pkt->um.dstmid = 5;/*直接从硬件GOE模块输出，不走解析、查表等模块*/
@@ -362,7 +362,7 @@ int callback(struct fast_packet *pkt,int pkt_len)
 {
 	int outport = -1;
 
-	printf("inport:%d,dstmid:%d,len:%d,dmac:%02X:%02X:%02X:%02X:%02X:%02X,smac:%02X:%02X:%02X:%02X:%02X:%02X\n",pkt->um.inport,pkt->um.dstmid,pkt_len,
+	printf("inport:%d,dstmid:%d,len:%d,dmac:%02X:%02X:%02X:%02X:%02X:%02X,smac:%02X:%02X:%02X:%02X:%02X:%02X\n",(int)pkt->um.inport,pkt->um.dstmid,pkt_len,
 	       pkt->data[0],pkt->data[1],pkt->data[2],pkt->data[3],pkt->data[4],pkt->data[5],
 	       pkt->data[6],pkt->data[7],pkt->data[8],pkt->data[9],pkt->data[10],pkt->data[11]);
 	/*MAC地址学习过程*/

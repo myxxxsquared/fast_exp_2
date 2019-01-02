@@ -5,7 +5,7 @@
 ## 生成
 
 ```sh
-autoreconf --install
+autoreconf --install --force
 ./configure --host=arm-linux-gnueabi
 make
 ```
