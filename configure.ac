@@ -15,9 +15,7 @@ AC_OUTPUT([
 Makefile
 include/Makefile
 libua/Makefile
-librule/Makefile
 l2switch/Makefile
-libreg/Makefile
 ])
 
 AC_OUTPUT

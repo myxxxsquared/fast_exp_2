@@ -7,10 +7,11 @@ bin_PROGRAMS =  \
 l2switch_SOURCES =  \
 	main_l2switch.cpp
 
-l2switch_LDADD = -L../libreg \
-	-L../librule \
+l2switch_LDADD =  \
 	-L../libua \
-	-lrule \
-	-lua \
-	-lreg \
-	-lpthread 
+	-lua
+
+l2switch_LDFLAGS =  \
+	-pthread \
+	-static
+

@@ -28,13 +28,35 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+#ifndef __FAST_VADDR_H__
+#define __FAST_VADDR_H__
+
+#ifdef OPENBOX_S4
+#include "openboxS4.h"
+#elif OPENBOX_S28
+#include "openboxS28.h"
+#elif NETMAGIC08
+#include "netmagic08.h"
+#elif XDL_DEBUG
+#include "xdl_debug.h"
+#else
+#error	"Please Select Platform(OPENBOX_S4/OPENBOX_S28/XDL_DEBUG)!"
+#include "xdl_debug.h"
+#endif
+
 
 #define FAST_DMID_PROTO_STACK 0x80  /**< 协议栈的MID值的定义,目的MID为0x80表示送到内核协议栈,大于0x80为软件模块，否则为硬件模块 */
 
-#if OpenBoxS28
-#include "OpenBox-S28.h"
-#elif NetMagic08
-#include "NetMagic08.h"
-#else
-#include "zynqbox.h"
-#endif
+#define SPEED_10        10
+#define SPEED_100       100
+#define SPEED_1000      1000
+#define SPEED_2500      2500
+#define SPEED_10000     10000
+
+/*仅做申明*/
+#define FAST_AMS_TX_TIME_H 0
+#define FAST_AMS_TX_TIME_L 0
+#define FAST_AMS_TX_STATUS 0
+#define FAST_AMS_TX_START  0
+
+#endif//__FAST_VADDR_H__

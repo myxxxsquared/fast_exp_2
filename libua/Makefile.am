@@ -5,6 +5,9 @@ lib_LIBRARIES =  \
 	libua.a
 
 libua_a_SOURCES =  \
-	main_libua.c
+	main_libua.c \
+	main_libreg.c \
+	main_librule.c
+	
 
 AM_CFLAGS = -lpthread 

@@ -417,13 +417,14 @@ int main(int argc,char* argv[])
 	memset(nm08_table,0,sizeof(struct nm08_neigh_table));
 
 	/*初始化平台硬件*/
-	fast_init_hw(0,0);	
+	// fast_init_hw(0,0);	
 	
 	/*UA模块初始化	*/
 	ua_init();
 	
 	/*配置硬件规则，将硬件所有报文送到模块ID为1的进程处理*/
 	init_rule(ACTION_SET_MID<<28|129);
+	// fast_reg_wr(FAST_ACTION_REG_ADDR|FAST_DEFAULT_RULE_ADDR,ACTION_SET_MID<<28|129);
 
 	/*启动地址学习表老化线程*/
 	nm08_start_aging();

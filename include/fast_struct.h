@@ -32,9 +32,6 @@
 #define __FAST_STRUCT_H__
 
 #pragma pack(1)
-
-
-
 /*-------------------------NetMagic 08----------------------------------*/
 /** 
  * @brief NetMagic08的访问控制（NMAC）报文的报文类型枚举定义
@@ -95,6 +92,12 @@ struct nm_packet
  * @brief UA通信的NetLink消息最大长度
  */
 #define FAST_UA_PKT_MAX_LEN 2048
+
+/** 
+ * @brief 支持UA注册的最大个数
+ */
+#define UA_MAX_MID_CNT 256
+
 /** 
  * @brief UA模块与内核交互消息定义
  * 消息内型主要包括：注册、注销等类型
@@ -119,10 +122,9 @@ typedef enum{
         ACTION_POLL = 2,		/**< 报文送软件,由CPU处理：将报文循环分派到处理线程(处理线程数则驱动模块参数决定,在指定线程数内循环派送)*/
         ACTION_PORT = 3,		/**< 报文在硬件,由FPGA处理：从指定硬件物理端口输出报文*/
         ACTION_SET_MID = 4,		/**< 报文送软件,由CPU处理：设置报文分派的模块ID号*/
-	ACTION_SET_QUEUE_RTP = 5,/**< 支持传媒RTP视频流的队列调度*/
-	ACTION_REPLACE_PROTO = 6,/**< 支持协议替换操作*/
-	ACTION_KEEP_RESOURCE = 7,/**< 支持流在端口转发时的资源预留*/
-	ACTION_SILM_WAN = 8,
+		ACTION_SET_QUEUE_RTP = 5,/**< 支持传媒RTP视频流的队列调度*/
+		ACTION_REPLACE_PROTO = 6,/**< 支持协议替换操作*/
+		ACTION_KEEP_RESOURCE = 7,/**< 支持流在端口转发时的资源预留*/
 }ACTION;
 
 /*-----------------------------------流表相关----------------------------------------------*/
@@ -250,10 +252,8 @@ struct fast_rule{
 	/*此前数据必须要写入到硬件*/	
 	u32 flow_stats_len;		/**< @brief 流表信息长度*/
 	u64 *flow_stats_info;   /**< @brief 流表信息存储指针位置*/
-#ifdef OpenBoxS28
-	
-#else
-	u32 *tmp;
+#ifdef OPENBOX_S4
+	u32 *tmp;				/*在S4系统中，上面变量指针大小为32*/
 #endif
 	u64 cookie;				/**< @brief 用来存储流的cookie信息，软件使用*/
 	u64 cookie_mask;		/**< @brief 用来存储流cookie的掩码信息，软件使用*/
@@ -292,6 +292,7 @@ struct row_bv
  */
 struct um_metadata{
 #if defined(__LITTLE_ENDIAN) /*INTER*/	
+#ifdef FAST_10
 	u64 ts:32,			/**< @brief 报文接收的时间戳 @note 如果用户需要使用表示更大的时间，建议存储在第二拍数据中（user[2]字段）*/
 		ts2:12,
 		flowID:14,		/**< @brief 流ID号*/
@@ -306,39 +307,55 @@ struct um_metadata{
 		len:12,			/**< @brief 报文长度 @note 最大可表示4095字节，但FAST平台报文缓存区最大为2048，完整以太网报文的MTU不要超过1500*/
 		inport:4,		/**< @brief 输入端口号 @note 取值：0——15，最多表示16个输入端口*/
 		ttl:4;			/**< @brief 报文通过模块的TTL值，每过一个处理模块减1*/
+#elif FAST_20
+	u64 ts:32,			/**< @brief 时间戳*/
+		reserve:17,		/**< @brief 保留*/
+		pktsrc:1,		/**< @brief 分组的来源，0为网络接口输入，1为CPU输入，此比特位在进入硬件时会交换到pkttype位置，保留位为18位*/
+		flowID:14;		/**< @brief 流ID*/
+	u64	seq:8,			/**< @brief 分组接收序列号*/
+		pst:8,			/**< @brief 标准协议类型（参考硬件定义）*/
+		dstmid:8,			/**< @brief 下一个处理分组的模块ID*/
+		srcmid:8,			/**< @brief 最近一次处理分组的模块ID*/
+		len:12,			/**< @brief 报文长度*/
+		discard:1,		/**< @brief 丢弃位*/
+		priority:3,		/**< @brief 分组优先级*/
+		outport:6,		/**< @brief 单播：分组输出端口ID，组播/泛洪：组播/泛洪表地址索引*/
+		outtype:2,		/**< @brief 输出类型，00：单播，01：组播，10：泛洪，11：从输入接口输出*/
+		inport:6,		/**< @brief 分组的输入端口号*/
+		pktdst:1,		/**< @brief 分组目的，0为网络接口输出，1为送CPU*/
+		pkttype:1;		/**< @brief 报文类型，0：数据报文，1：控制报文。硬件识别报文类别后，会将pktsrc位交换到此，恢复硬件数据格式*/		
+#endif
 	u64 user[2];		/**< @brief 用户自定义metadata数据格式与内容 @remarks 此字段由可用户改写，但需要保证数据大小严格限定在16字节*/
 #elif defined(__BIG_ENDIAN)  /**/	
-	u64 ttl:4,
-		inport:4,
-		len:12,
-		srcmid:8,
-		dstmid:8,
-		seq:12,
-		outport:16;
-	u64 pktsrc:1,
-		pktdst:1,
-		discard:1,
-		priority:3,
-		flowID:14,
-		ts:44;
-	u64 user[2];
+	#error	"(__BIG_ENDIAN)Please fix <asm/byteorder.h>"
 #else
-	u64 ts:44,			/**< @brief 报文接收的时间戳 @note 如果用户需要使用表示更大的时间，建议存储在第二拍数据中（user[2]字段）*/
-		flowID:14,		/**< @brief 流ID号*/
-		priority:3,		/**< @brief 报文优先级*/
-		discard:1,		/**< @brief 指示报文是否丢弃 @note 默认为0，表示不丢弃，置1时表示丢弃*/
-		pktdst:1,		/**< @brief 报文的输出目的方向 @note 0表示输出到网络端口，1表示输出到CPU*/
-		pktsrc:1;		/**< @brief 报文的输入源方向 @note 0表示网络端口输入，1表示从CPU输入*/
-	u64 outport:16,		/**< @brief 报文输出端口号 @note 以bitmap形式表示，1表示从0号端口输出；8表示从3号端口输出*/
-		seq:12,			/**< @brief 报文接收时的序列号 @note 每个端口独立维护一个编号*/
-		dstmid:8,		/**< @brief 报文下次处理的目的模块编号*/
-		srcmid:8,		/**< @brief 报文上次处理时的模块编号*/
-		len:12,			/**< @brief 报文长度 @note 最大可表示4095字节，但FAST平台报文缓存区最大为2048，完整以太网报文的MTU不要超过1500*/
-		inport:4,		/**< @brief 输入端口号 @note 取值：0——15，最多表示16个输入端口*/
-		ttl:4;			/**< @brief 报文通过模块的TTL值，每过一个处理模块减1*/
-	u64 user[2];		/**< @brief 用户自定义metadata数据格式与内容 @remarks 此字段由可用户改写，但需要保证数据大小严格限定在16字节*/
-#error	"Please fix <asm/byteorder.h>"
+	#error	"Please fix <asm/byteorder.h>"
 #endif
+};
+
+/*FAST 2.0环形控制通路控制报文*/
+struct ctl_metadata
+{
+	u64 data:32,
+		mask:32;
+	u64 addr:32,
+		dstmid:8,
+		srcmid:8,
+		seq:12,
+		type:3,
+		pkttype:1;
+	u64 reserve;
+	u64 sessionID;
+};
+
+struct common_metadata
+{
+	u64 a;
+	u64 b:32,
+		c:31,
+		pkttype:1;
+	u64 d;
+	u64 e;
 };
 
 /**
@@ -350,16 +367,18 @@ struct um_metadata{
  * 对齐标志2字节，为对对齐IP地址填充使用
  * 完成以太网报文大小为1514字节，存储完整以太网报文内容
  */
-struct fast_packet{
-#ifdef OpenBoxS28
-	struct um_metadata um;		/**< @brief UM模块数据格式定义 @see ::um_metadata */
+struct fast_packet
+{
+	union
+	{
+		struct um_metadata um;		/**< @brief UM模块数据格式定义 @see ::um_metadata */
+		struct ctl_metadata cm;		/**< 控制报文格式定义*/
+		struct common_metadata md;  /**< 公共控制信息，报文类型（0：数据，1：控制）*/
+	};
+#ifdef OPENBOX_S28
 	u16 flag;					/**< @brief 2字节对齐标志，主要是为了IP地址的对齐 @note 此标志在内核会用来标记是一个FAST类型报文，建议用户不使用些字段*/
-	u8 data[1514];
-#else
-	struct um_metadata um;		/**< @brief UM模块数据格式定义 @see ::um_metadata */
-	//u16 flag;					/**< @brief 2字节对齐标志，主要是为了IP地址的对齐 @note 此标志在内核会用来标记是一个FAST类型报文，建议用户不使用些字段*/
-	u8 data[1514];				/**< @brief 完整以太网报文数据，暂时不含CRC数据*/
 #endif
+	u8 data[1514];				/**< @brief 完整以太网报文数据，暂时不含CRC数据*/
 };
 
 /**
@@ -393,36 +412,3 @@ struct in6_xaddr
 
 /* Ensure that we can do comparisons as longs. */
 #endif //__FAST_STRUCT_H__
-
-/*-------------------------Remote pkt----------------------------------*/
-typedef enum{
-	HW_INIT = 0,	//HW init request
-	HW_DEST = 1,	//HW Destroy
-	REG_RD = 2,	//Reg read request
-	REG_RD_R = 3,	//Reg read reply
-	REG_WR = 4,	//Reg write request
-	REG_WR_R = 5,	//Reg write reply
-	UA_INIT = 6,	//UA init request
-	UA_INIT_R = 7,	//UA init reply
-	UA_DEST = 8,	//UA destroy request
-	UA_DEST_R = 9,	//UA destroy reply
-	UA_PKT_SEND = 10,	//UA send packet
-	UA_PKT_RECV = 11,	//UA recv packet
-}PKT_TYPE;
-
-struct reg_pkt_remote
-{
-	u32 type;
-	u64 value1;
-	u64 value2;
-}__attribute__((packed));
-
-struct ua_pkt_remote
-{
-	u32 type;
-	u32 pkt_len;
-	struct fast_packet pkt;
-}__attribute__((packed));
-
-int remote_control_handle; /*remote control socket handle*/
-struct sockaddr_in remote_info;

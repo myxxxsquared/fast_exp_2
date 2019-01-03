@@ -31,6 +31,7 @@
  */
 #include "../include/fast.h"
 
+
 #define RULE_LEN sizeof(struct fast_rule)   /**< @brief 一条硬件流表的数据结构大小宏定义 256字节*/
 
 
@@ -50,7 +51,7 @@ struct rule_table
  *
  */ 
 struct reg_value{
-		u32 v[1];
+		u64 v[1];
 };
 
 
@@ -171,11 +172,16 @@ void oxm2rule(char *dst,char *oxm,int len)
 */
 u64 openbox_rule_reg_rd(u64 addr)
 {
-#ifdef OpenBoxS28
-	fast_reg_wr(FAST_RULE_REG_RADDR,(u64)addr<<32);
-	return fast_reg_rd(FAST_RULE_REG_VADDR);
+#ifdef OPENBOX_S4	
+	u64 v = fast_reg_rd(FAST_RULE_REG_WADDR+addr);
+	return (v<<32)|(v>>32);
 #else
-	return fast_GME_reg_rd(addr);
+	u64 value = 0;
+	fast_reg_wr(FAST_RULE_REG_RADDR,(u64)addr<<32);
+	value = fast_reg_rd(FAST_RULE_REG_VADDR);
+	fast_reg_wr(FAST_RULE_REG_RADDR,(u64)((addr+4)<<32));
+	value |=  fast_reg_rd(FAST_RULE_REG_VADDR)<<32;
+	return value;
 #endif
 }
 
@@ -187,13 +193,16 @@ u64 openbox_rule_reg_rd(u64 addr)
  * @note 写规则寄存器操作为间接寄存器操作，真实寄存器值存储在写入数值的高32位，对应此寄存器的值存放在低32位，
  * 将二者合并成为一个64位数据，写入规则间接写寄存器地址中，实现规则寄存器的间接访问操作
 */
-void openbox_rule_reg_wr(u32 addr,u32 value)
-{	
-#ifdef OpenBoxS28
-	fast_reg_wr(FAST_RULE_REG_WADDR,(u64)addr<<32|value);//原来使用的规则写法，正常	
+void openbox_rule_reg_wr(u64 addr,u64 value)
+{
+#ifdef OPENBOX_S4
+	u64 v = (value<<32)|(value>>32);
+	fast_reg_wr(FAST_RULE_REG_WADDR+addr,v);//原来使用的规则写法，正常		
 #else
-	fast_GME_reg_wr(addr,value);//原来使用的规则写法，正常
+	fast_reg_wr(FAST_RULE_REG_WADDR,(u64)(addr<<32)|(value&0xFFFFFFFF));//原来使用的规则写法，正常
+	fast_reg_wr(FAST_RULE_REG_WADDR,(u64)((addr+4)<<32)|(value>>32));
 #endif
+	
 }
 
 /**
@@ -236,6 +245,7 @@ void write_rule_normal(int idx,u32 valid)
 {
 	struct reg_value *value = (struct reg_value *)&table.rules[idx];//将规则转化为32位操作的数据形式
 	int i = 0,cnt = sizeof(struct flow)*2/sizeof(struct reg_value);//cnt计算一条规则要写入多个少32位的值
+	u64 ap = 0;
 	//写一条指定的规则数据到指定的位置
 	table.rules[idx].valid = valid;	
 	
@@ -249,16 +259,83 @@ void write_rule_normal(int idx,u32 valid)
 	/*写此条规则对应的ACTION*/
 	openbox_action_reg_wr(idx*8,table.rules[idx].action);
 
-	for(;i<cnt;i++)/*只写key和mask的值*/
+	for(;i<cnt+3;i++)/*只写key和mask的值,再加后面几个数据*/
 	{
 		openbox_rule_reg_wr(RULE_LEN*idx + i*sizeof(struct reg_value),(value->v[i]));//前一个计算规则开始的相对位置，后一个为此位置要写入的值
 	}
-	
-	/*写入规则的优先级*/
-	openbox_rule_reg_wr(RULE_LEN*idx + cnt*sizeof(table.rules[idx].priority),table.rules[idx].priority);
 delete_rule:
-	/*写入规则的有效位*/
-	openbox_rule_reg_wr(RULE_LEN*idx + (cnt+1)*sizeof(table.rules[idx].valid),table.rules[idx].valid);	
+	/*写入规则的有效位与优先级（两者都是32位，一次写入64位）*/
+	ap = table.rules[idx].valid;
+	ap = (ap<<32)|table.rules[idx].priority;	
+	openbox_rule_reg_wr(RULE_LEN*idx + cnt*sizeof(struct reg_value),ap);	
+}
+
+/**
+* @brief 写入一条规则到BV查表引擎
+*
+* 往硬件写入一条指定的规则,输入参数为规则索引号和规则有效位，BV查表引擎暂不开放使用
+* 2017/06/01 BV算法暂不支持新版本流表配置（支持IPv6的新流表项设计，其主要原因是新流表项中输入端口为4位
+* 而目前实现的BV版本，其最小切分粒度为8位，故端口号设置可能会存在问题）
+* @param idx		：写入规则的索引
+* @param valid		：写入规则的有效位
+* @note 若将规则置无效，只需要将有效位标志置0即可
+*/
+void write_rule_bv(int idx,u32 valid)
+{
+	struct reg_value *value = (struct reg_value *)&table.rules[idx].key;//将规则转化为32位操作的数据形式
+	int i = 0,oft = 0;
+	u32 op_idx = 0,mask_value = 0;
+	u8 *mask = NULL;
+	
+	//写一条指定的规则数据到指定的位置	
+	
+	/*写规则内容*/
+	for(;i<sizeof(table.rules[idx].key)/sizeof(struct reg_value);i++)/*把ACTION的位置留出来，不配置在此处*/
+	{
+		openbox_rule_reg_wr(i*sizeof(struct reg_value),value->v[i]);//前一个计算规则开始的相对位置，后一个为此位置要写入的值
+	}
+	
+	oft = i;
+	/*写掩码*/
+	mask = (u8 *)&table.rules[idx].mask;	
+	for(i=0;i<sizeof(table.rules[idx].mask)/sizeof(*mask);i++)
+	{
+		if(mask[i] == 0xFF)
+		{
+			mask_value |= 1<<(i%32);/*1表示有效*/
+		}
+		else if(mask[i] != 0x00)
+		{
+			printf("Mask[%d]:%02X!(Must be 0xFF or 0x00)",i,mask[i]);
+			exit(0);
+		}
+		if(i % 32 == 31)
+		{
+			openbox_rule_reg_wr(4*oft++,mask_value);
+			mask_value = 0;
+		}
+	}
+	if(valid == 1)
+	{
+		op_idx = 0x1;/*1：添加，3：删除*/
+	}
+	else if(valid == 0)
+	{
+		op_idx = 0x3;/*1：添加，3：删除*/
+	}
+
+	oft = (sizeof(table.rules[idx].key)+sizeof(table.rules[idx].mask))/sizeof(struct reg_value);
+	op_idx |= idx<<4;/*4-19位表示规则ID*/
+	openbox_rule_reg_wr(oft*4,op_idx);/*写规则ID和操作码*/
+	
+	//写此条规则对应的ACTION
+	openbox_action_reg_wr(idx*8,table.rules[idx].action);
+
+	//软件规则标志更新
+	table.rules[idx].valid = valid;
+
+	/*BV算法实现里暂时没有做valid有效位标记和优先级字段，
+	 *其优先级根据流表项的ID来判断，ID值较小的优先级高*/
 }
 
 /**
@@ -269,7 +346,11 @@ delete_rule:
 */
 void write_rule(int idx,u32 valid)
 {
+#ifndef LOOKUP_BV
 	write_rule_normal(idx,valid);
+#else
+	write_rule_bv(idx,valid);
+#endif
 }
 
 
@@ -383,6 +464,7 @@ int rule_exists_add(struct fast_rule *rule,int *idx)
 	}
 	return -1;/*表示不存在，存在返回表的索引*/
 }
+
 /**
 * @brief 添加规则操作
 *
@@ -487,10 +569,14 @@ void print_sw_rule_by_idx(int idx)
 
 	value = (struct reg_value *)&table.rules[idx];
 	printf("0x%04X  ",idx);
-	for(j=0;j<cnt*4;j++)
+	for(j=0;j<cnt*sizeof(struct reg_value);j++)
 	{
 		printf("%02X",*((u8 *)value+j));
-		if(j % 64 == 63)printf("\n--------");
+		
+		if(j % 64 == 63)
+			printf("\n--------");
+		else if(j % 8 == 7)
+			printf(" ");
 	}
 	printf("\n");
 }
@@ -502,7 +588,7 @@ void print_user_rule(struct fast_rule *rule)
 
 	value = (struct reg_value *)rule;
 	printf("0x%04X  ",0);
-	for(j=0;j<cnt*4;j++)
+	for(j=0;j<cnt*sizeof(struct reg_value);j++)
 	{
 		printf("%02X",*((u8 *)value+j));
 		if(j % 64 == 63)printf("\n--------");
@@ -518,21 +604,23 @@ void print_user_rule(struct fast_rule *rule)
 /*打印硬件存储的规则数据,每个数据都需要从硬件寄存器读返回*/
 void print_hw_rule(void)
 {
-	u32 i = 0,j = 0,cnt = sizeof(struct flow)*2/sizeof(struct reg_value) + 2;	/*2指优先级和有效位，动作要单独读*/
-	u32 value = 0;
-
+	u32 i = 0,j = 0,cnt = sizeof(struct flow)*2/sizeof(struct reg_value);	/*优先级,有效位和动作要单独读*/
+	u8 pri = 0,valid = 0;
+	u64 value = 0;
 	printf("-----------------Default Action:0x%X-----------------------------\n",openbox_action_reg_rd(FAST_DEFAULT_RULE_ADDR));
-for(;i<FAST_RULE_CNT;i++)
+	for(;i<FAST_RULE_CNT;i++)
 	{
 		printf("0x%04X  ",i);
 		for(j=0;j<cnt;j++)
 		{
-			value = 0xFFFFFFFF & openbox_rule_reg_rd(RULE_LEN*i + j*4);
-			printf("%08X ",be32toh(value));
-			if(j % 16 == 15)printf("\n--------");
+			value = openbox_rule_reg_rd(RULE_LEN*i + j*sizeof(struct reg_value));
+			printf("%016llX ",be64toh(value));			
+			if(j % 8 == 7)printf("\n        ");
 		}
-		printf("Action:0x%X",openbox_action_reg_rd(i*8));
-		printf("\n");		
+		value = openbox_rule_reg_rd(RULE_LEN*i + j*sizeof(struct reg_value));
+		pri = value&0xFF;
+		valid = (value>>32)&0x1;
+		printf("Priority:0x%X,Valid:0x%X,Action:0x%lX\n",pri,valid,openbox_action_reg_rd(i*8));
 	}
 	printf("-----------------Default Action:0x%X-----------------------------\n",openbox_action_reg_rd(FAST_DEFAULT_RULE_ADDR));
 }
@@ -561,7 +649,7 @@ int read_hw_rule(struct fast_rule *rule,int index)
 		struct reg_value *value = (struct reg_value *)rule;
 		for(j=0;j<cnt;j++)
 		{
-			value->v[j] = be32toh(0xFFFFFFFF & openbox_rule_reg_rd(RULE_LEN*index + j*4));
+			value->v[j] = be64toh(openbox_rule_reg_rd(RULE_LEN*index + j*sizeof(struct reg_value)));
 		}
 		return index;
 	}
@@ -580,7 +668,19 @@ void init_rule(u32 default_action)
 
 	memset(&table,0,sizeof(struct rule_table));
 	memset(&zero_rule,0,sizeof(struct fast_rule));
+#ifndef LOOKUP_BV
+	for(;i<FAST_RULE_CNT;i++)
+	{
+		for(j=0;j<cnt;j++)
+		{
+			openbox_rule_reg_wr(RULE_LEN*i + j*sizeof(struct reg_value),0);//将每条规则数据清零
+		}
+		openbox_action_reg_wr(i*8,0);	//将规则清零
+	}
+#else
+	/*BV算法不需要将表空间写一次零，可通过表复位操作实现清零，暂未支持*/
+#endif
 	//给硬件配置默认规则	
 	openbox_action_reg_wr(FAST_DEFAULT_RULE_ADDR,default_action);
-	FAST_DBG("librule version:%s,Default Action:0x%X\n",RULE_VERSION,default_action);
+	FAST_DBG("librule version:%s,Default Action:0x%X\n",LIBRULE_VERSION,default_action);
 }

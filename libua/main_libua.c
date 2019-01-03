@@ -35,6 +35,10 @@
 #include "../include/fast.h"
 
 
+
+#define FAST_UA_FILE 1
+#undef FAST_UA_FILE
+
 int recv_poll = 1;
 int nlsk_recv = -1;
 int cur_mid = -1;
@@ -47,7 +51,7 @@ struct iovec iov;
 struct sockaddr_nl src_addr, dest_addr;	
 int uaf = 0;
 void fast_ua_destroy(void);
-
+int seq = 0;
 /**
 * @brief UA程序非正常退出时的最后工作
 *
@@ -58,10 +62,24 @@ void fast_ua_destroy(void);
 */
 void ua_improper_quit(int argc)
 {
-	void fast_ua_destroy();
-	exit(0);
-}
+	recv_poll = 0;
+	nlh->nlmsg_len = FAST_UA_REG_LEN;
+	/*构建UA的注销报文*/
+	memcpy(NLMSG_DATA(nlh),(char *)&unregister_ua,FAST_UA_REG_LEN);
+	iov.iov_base = (void *)nlh;
+	iov.iov_len = nlh->nlmsg_len;
+	dest_addr.nl_family = AF_NETLINK;
+	netlink_msg.msg_name = (void *)&dest_addr;
+	netlink_msg.msg_namelen = sizeof(dest_addr);
+	netlink_msg.msg_iov = &iov;
+	netlink_msg.msg_iovlen = 1;
 
+	/*向系统发送注销信息*/
+	sendmsg(nlsk_recv, &netlink_msg, 0);	
+	close(nlsk_recv);
+	printf("fast_ua_destroy\n");
+	exit(0);//结束程序运行
+}
 
 /**
 * @brief UA向内核注册操作函数
@@ -147,6 +165,9 @@ static int fast_ua_register(int mid)
 	if(register_ua.mid == mid && register_ua.pid == cur_pid && register_ua.state == UA_OK)//返回2说明注册成功
 	{		
 		FAST_DBG("UA->pid:%d,mid:%d,Register OK!\n",register_ua.pid,register_ua.mid);
+		signal(SIGTERM,ua_improper_quit);//非法结束时，调用注销函数
+		signal(SIGKILL,ua_improper_quit);//非法结束时，调用注销函数
+		signal(SIGTSTP,ua_improper_quit);//非法结束时，调用注销函数
 		signal(SIGINT,ua_improper_quit);//非法结束时，调用注销函数
 		cur_mid = mid;
 		return 0;
@@ -173,16 +194,16 @@ static int fast_ua_register(int mid)
 */
 int fast_ua_send(struct fast_packet *pkt,int pkt_len)
 {
-	if(pkt->um.len == pkt_len && pkt_len > 32 && pkt_len <= 34 + 1514)
-	{
-		
-	}
-	else
+	if(pkt->um.len != pkt_len)	
 	{
 		printf("ERROR:um->len:%d,pkt_len:%d\n",pkt->um.len,pkt_len);
 		exit(0);
-	}
+	}	
 	pkt->um.srcmid = cur_mid;
+	pkt->md.pkttype = 0;
+#ifdef FAST_UA_FILE
+	return write(uaf,(char *)pkt,pkt_len);
+#else
 	memcpy(NLMSG_DATA(nlh),pkt,pkt_len);
 	nlh->nlmsg_len = pkt_len + 16;//除数据长度外再加上消息头长度
 	iov.iov_base = (void *)nlh;
@@ -199,9 +220,80 @@ int fast_ua_send(struct fast_packet *pkt,int pkt_len)
 		printf("Send len ERROR!\n");
 		return -1;
 	}
-	return pkt_len;
-//#else	
-//	return write(uaf,(char *)pkt,pkt_len);
+	return pkt_len;	
+#endif	
+}
+
+
+int fast_cm_send(struct fast_packet *pkt,int pkt_len)
+{		
+#ifdef FAST_UA_FILE
+	return write(uaf,(char *)pkt,pkt_len);
+#else
+	memcpy(NLMSG_DATA(nlh),pkt,pkt_len);
+	nlh->nlmsg_len = pkt_len + 16;//除数据长度外再加上消息头长度
+	iov.iov_base = (void *)nlh;
+	iov.iov_len = nlh->nlmsg_len;
+	dest_addr.nl_family = AF_NETLINK;
+	netlink_msg.msg_name = (void *)&dest_addr;
+	netlink_msg.msg_namelen = sizeof(dest_addr);
+	netlink_msg.msg_iov = &iov;
+	netlink_msg.msg_iovlen = 1;
+
+	/*检验发送长度是否与报文长度一致,不同表示发送失败*/
+	if(sendmsg(nlsk_recv, &netlink_msg, 0) != nlh->nlmsg_len)/*要与对齐后的长度相比*/
+	{
+		printf("Send len ERROR!\n");
+		return -1;
+	}
+	return pkt_len;	
+#endif	
+}
+
+u32 fast_ua_hw_rd(u8 dmid,u32 addr,u32 mask)
+{
+	u32 data = 0;
+	struct fast_packet *pkt = (struct fast_packet *)malloc(sizeof(struct ctl_metadata));
+	
+	pkt->cm.pkttype = 1;/*控制报文*/
+	pkt->cm.type = 1;
+	pkt->cm.seq = seq++;
+	pkt->cm.srcmid = cur_mid;
+	pkt->cm.dstmid = dmid;
+	pkt->cm.addr = addr;
+	pkt->cm.data = 0x0923;
+	pkt->cm.mask = mask;
+	pkt->cm.reserve = 1;
+	pkt->cm.sessionID = (u64)pkt;
+	if(fast_cm_send(pkt,sizeof(struct ctl_metadata)) != sizeof(struct ctl_metadata))
+	{
+		printf("fast_um_rd send pkt Err!\n");
+	}
+	while(pkt->cm.reserve == 1)
+	{
+		usleep(20);
+	}		
+	data = pkt->cm.data;
+	free(pkt);	
+	return data;
+}
+
+void fast_ua_hw_wr(u8 dmid,u32 addr,u32 value,u32 mask)
+{
+	struct fast_packet pkt;
+	pkt.cm.pkttype = 1;/*控制报文*/
+	pkt.cm.type = 2;
+	pkt.cm.seq = seq++;
+	pkt.cm.srcmid = cur_mid;
+	pkt.cm.dstmid = dmid;
+	pkt.cm.addr = addr;
+	pkt.cm.data = value;
+	pkt.cm.mask = mask;
+
+	if(fast_cm_send(&pkt,sizeof(struct ctl_metadata)) != sizeof(struct ctl_metadata))
+	{
+		printf("fast_um_wr send pkt Err!\n");
+	}
 }
 
 /**
@@ -211,12 +303,20 @@ int fast_ua_send(struct fast_packet *pkt,int pkt_len)
 * @return   0：表示成功\n
  *			否则退出程序
 */
-int fast_ua_file(void)
+int fast_ua_file(u8 mid)
 {
-	if((uaf=open("/proc/openbox/ua",O_RDWR,0)) == -1)
+	char ua_path[256] = {0};
+
+	sprintf(ua_path,"/proc/openbox/ua_%d",mid);
+	if((uaf=open(ua_path,O_RDWR,0)) == -1)
 	{
 		printf("open UA file Err!\n");
 		exit (-1);
+	}
+	if(lseek(uaf,mid,SEEK_SET) != mid)
+	{
+		printf("Set Mid Err!\n");
+		exit(-1);
 	}
 	return 0;
 }
@@ -235,57 +335,35 @@ int fast_ua_file(void)
  * 参数一表示接收目的MID为此值的报文
  * 参数二表示接收到报文后通过此回调函数输出
  */
-
-
 int fast_ua_init(int mid,fast_ua_recv_callback callback)
 {
 	int err = 0;
+
+	fast_init_hw(0,0);
+	
 	/*向系统注册自己要接收报文的模块ID号*/
 	if((err = fast_ua_register(mid)))
 	{
 		return err;
 	}
-
 	/*保存用户回调函数的指针信息*/
 	ua_recv_callback = callback;
-	//fast_ua_file();
-	FAST_DBG("libua version:%s\n",UA_VERSION);
+#ifdef FAST_UA_FILE
+	fast_ua_file(mid);
+#endif
+	FAST_DBG("libua version:%s\n",LIBUA_VERSION);
 	return 0;
 }
-
-
 
 /**
 * @brief UA注销操作
 *
 * UA程序正常或非法退出时执行的操作，向内核告知自己将要结束，让内核清除此MID号上的报文转发功能
 */
-void fast_ua_destroy_local(void)
-{
-	recv_poll = 0;
-	nlh->nlmsg_len = FAST_UA_REG_LEN;
-	/*构建UA的注销报文*/
-	memcpy(NLMSG_DATA(nlh),(char *)&unregister_ua,FAST_UA_REG_LEN);
-	iov.iov_base = (void *)nlh;
-	iov.iov_len = nlh->nlmsg_len;
-	dest_addr.nl_family = AF_NETLINK;
-	netlink_msg.msg_name = (void *)&dest_addr;
-	netlink_msg.msg_namelen = sizeof(dest_addr);
-	netlink_msg.msg_iov = &iov;
-	netlink_msg.msg_iovlen = 1;
-
-	/*向系统发送注销信息*/
-	sendmsg(nlsk_recv, &netlink_msg, 0);
-	close(nlsk_recv);
-	printf("fast_ua_destroy\n");
-	exit(0);//结束程序运行
-}
-
 void fast_ua_destroy(void)
 {
-	fast_ua_destroy_local ();
+	ua_improper_quit(0);
 }
-
 
 /**
 * @brief 启动UA接收内核转发报文线程操作
@@ -302,11 +380,8 @@ void fast_ua_destroy(void)
 void recv_thread(void *argv)
 {
 	struct fast_packet *pkt = (struct fast_packet *)malloc(FAST_UA_PKT_MAX_LEN);
-	u8 buffer[2048];
-
-	int rc = 0;
+	int rc = 0;	
 	
-	FAST_DBG("fast_ua_recv......\n");
 	/*超时设置机制1
 	int flag = fcntl(nlsk_recv,F_GETFL,0);
 	fcntl(nlsk_recv,F_SETFL,flag|O_NONBLOCK);//非阻塞式，如果没有得到数据就返回，rc = -1
@@ -315,21 +390,36 @@ void recv_thread(void *argv)
 	struct timeval timeout ={0,0};
 	setsockopt(nlsk_recv,SOL_SOCKET,SO_RCVTIMEO,(char *)&timeout,sizeof(struct timeval));
 	*/
-	
+	if(ua_recv_callback == NULL)
+	{
+		printf("callback is NULL!\n");
+		exit(-1);
+	}
+	FAST_DBG("fast_ua_recv......\n");
 	while(recv_poll == 1)
 	{
-		memset(pkt, 0, FAST_UA_PKT_MAX_LEN);
+		//memset(pkt, 0, FAST_UA_PKT_MAX_LEN);
 		/*阻塞式接收内核分派报文*/
+#ifdef FAST_UA_FILE
+		rc = read(uaf,pkt,FAST_UA_PKT_MAX_LEN);
+#else
 		rc = recv(nlsk_recv,pkt,FAST_UA_PKT_MAX_LEN, 0);
-		if(rc >0 && ua_recv_callback != NULL)
-		{	
-			/*用户回调函数有效时,通过回调函数转给用户处理*/
-			ua_recv_callback(pkt,rc);
-		}/*
-		else
-		{
-			FAST_DBG("time out!\n");
-		}*/
+#endif
+		if(rc >0)
+		{			
+			if(pkt->md.pkttype == 0)
+			{
+				ua_recv_callback(pkt,rc);
+			}
+			else
+			{
+				struct fast_packet *ctl_pkt = (struct fast_packet *)pkt->cm.sessionID;				
+				ctl_pkt->cm.data = pkt->cm.data;
+				ctl_pkt->cm.reserve = 0;
+				
+			}
+		}
+		//sleep(1);
 	}
 }
 

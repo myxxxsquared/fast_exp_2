@@ -31,7 +31,6 @@
 #ifndef __FAST_H__
 #define __FAST_H__
 #include <stdio.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,107 +46,59 @@
 #include <linux/if_ether.h>
 #include <linux/netlink.h>
 #include <netinet/in.h> /*IPv6 addr*/
-#include <arpa/inet.h>
 #include <sys/file.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
-// MODIFY 增加C++兼容性
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define REG_VERSION "1.1.3" /*Version of libreg*/
-#define RULE_VERSION "1.0.3"	/*Version of librule*/
-#define UA_VERSION "1.1.3"  /*Version of libua*/
-
-/**Enable FAST_Remote_control mod**/
-#define REMOTE_MOD 1
-#undef REMOTE_MOD
-
-#if REMOTE_MOD
-#define REMOTE_PORT 1234
-#define REMOTE_IP "192.168.1.108"
-#endif
 
 /** 是否启动软件调试模式，不启用对硬件操作，对硬件寄存器读写进行屏蔽，仅做打印输出 */
 #define XDL_DEBUG 1   /**< 启用软件调试模式 */
 #undef XDL_DEBUG	/**< 不启用软件调试模式 */
 
+/** 硬件平台使用ZYNQ系列的定义，20180601开始使用*/
+#define OPENBOX_S4  1  /**< 硬件平台使用ZYNQ平台 */
+//#undef OPENBOX_S4 /**< 硬件平台不使用ZYNQ平台 */
 
-/** 硬件平台是否使用NetMagic 08设备，默认使用湖南新实OpenBox平台，支持其他平台，请使用如下宏定义 */
-#define NetMagic08 1  /**< 硬件平台使用NetMagic08平台 */
-#undef NetMagic08   /**< 硬件平台不使用NetMagic08平台 */
+/** 硬件平台使用OpenBox-S28系列的定义，20180601开始使用*/
+#define OPENBOX_S28  1  /**< 硬件平台使用ZYNQ平台 */
+#undef OPENBOX_S28 /**< 硬件平台不使用ZYNQ平台 */
 
-/** 硬件平台使用OpenBox-S28的定义*/
-#define OpenBoxS28 1  /**< 硬件平台使用OpenBox-S28平台 */
-#undef OpenBoxS28     /**< 硬件平台不使用OpenBox-S28平台 */
+
+/*FAST架构数据结构版本号1.0*/
+#define FAST_10 1
+#undef FAST_10
+/*FAST架构数据结构版本号2.0*/
+#define FAST_20 1
+//#undef FAST_20
 
 /** 硬件查表模式是否使用BV查表，默认为顺序匹配查表 */
 #define LOOKUP_BV 1   /**< 硬件查表使用BV */
 #undef LOOKUP_BV	/**< 硬件查表不使用BV */
 
 
-#ifdef NetMagic08
-/** NetMagic 08平台进行访问控制地IP协议类型定义，值为：253 */
-#define NMAC_PROTO 253
-#endif
-
 #include "fast_type.h"
 #include "fast_struct.h"
 #include "fast_err.h"
 #include "fast_vaddr.h"
-
-/*---------------OFP------------------*/
-int ofp_init(int argc,char *argv[]);/** 初始化OFP通道*/
-void ofp_exit(void);/** 退出OFP通道*/
-
-
+#include "fast_version.h"
+#include "fast_sys_dev.h"
 
 /*---------------REG------------------*/
-int fast_init_hw(u64 addr,u64 len);/** 硬件资源初始，NetMagic08则进行连接操作*/
-void fast_distroy_hw(void);/** 销毁硬件资源信息，NetMagic08则进行释放连接操作*/
 u64 fast_reg_rd(u64 regaddr);/** 读硬件64位寄存器*/
 void fast_reg_wr(u64 regaddr,u64 regvalue);/** 写硬件64位寄存器*/
-u32 fast_GME_reg_rd(u32 regaddr);
-void fast_GME_reg_wr(u32 regaddr,u32 regvalue);
-
-/*---------------RULE------------------*/
-#ifndef LOOKUP_BV
-#define FAST_RULE_CNT 32
-#else
-#define FAST_RULE_CNT 32
-#endif
-void print_hw_rule(void);/** 打印硬件规则(通过寄存器读返回,并显示)*/
-void print_sw_rule(void);/** 打印软件缓存的规则*/
-void init_rule(u32 default_action);	   /** 初始化规则模块,需要输入默认动作2017/06/01修改*/
-int fast_add_rule(struct fast_rule *rule);/** 添加一条规则*/
-int fast_modify_rule(struct fast_rule *rule,int idx);/** 修改指定位置的规则,函数内部会同步到硬件*/
-int fast_del_rule(int idx);/** 删除一条规则,函数内部会同步到硬件*/
-int read_hw_rule(struct fast_rule *rule,int index);/** 从硬件读取一条指定的规则内容*/
-int rule_exists(struct fast_rule *rule);/**/
 
 /*---------------UA------------------*/
 int fast_ua_init(int mid,fast_ua_recv_callback callback);/** UA模块初始化*/
 void fast_ua_destroy(void);/** UA模块注销(销毁)*/
 int fast_ua_send(struct fast_packet *pkt,int pkt_len);/** UA发送报文功能函数*/
 void fast_ua_recv();/** UA启动报文接收线程(接收到报文后,回调用户注册函数)*/
-void print_pkt(struct fast_packet *pkt,int pkt_len);/** 打印FAST结构报文*/
+void fast_ua_hw_wr(u8 dmid,u32 addr,u32 value,u32 mask);
+u32 fast_ua_hw_rd(u8 dmid,u32 addr,u32 mask);
 
-int fast_sw_init(int mid,fast_ua_recv_callback callback);
-int fast_sw_send(struct fast_packet *pkt,int pkt_len);
-
-/*--------------OpenFlow Channel----------------*/
-u16 n2rule16(u16 n);/** */
-u32 n2rule32(u32 n);/** */
-u64 n2rule64(u64 n);/** */
-void set_rule_mac64(char *mac,u64 value);/** */
-void set_rule_mac_oxm(char *mac,char *oxm);/** OXM是网络序*/
-void set_rule_ipv6_oxm(char *ipv6,char *oxm);/** */
-void oxm2rule(char *dst,char *oxm,int len);/** */
-void init_rule_sw(void);
-u32 fast_match_rule(struct flow *key);
-void print_sw_rule_by_idx(int idx);
-void print_user_rule(struct fast_rule *rule);
 /*--------------DEBUG----------------*/
 #ifdef FAST_KERNEL
 #define PFX "fastK->"
@@ -161,7 +112,6 @@ void print_user_rule(struct fast_rule *rule);
 #define FAST_ERR(args...) do{printf(EPFX);printf(args);exit(0);}while(0)
 #endif
 
-// MODIFY 增加C++兼容性
 #ifdef __cplusplus
 }
 #endif
