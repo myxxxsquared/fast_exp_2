@@ -37,6 +37,9 @@
 #define MAC_LEN 6				/*MAC地址长度*/
 #define MAC_LIFE_TIME 300	   /*MAC地址生命时长为300秒，可调整*/
 
+// #define l2dbg(args...) printf(args)
+#define l2dbg(args...)
+
 /*端口计数*/
 struct nm08_port_stats
 {
@@ -108,7 +111,7 @@ void update_mac_time(u8 inport,u8 index)
 	}
 	*/
 	nm08_table->mac[index].port = inport;/*更新MAC所在端口号，有可能是从另外端口拔出，插到了新端口上，如此可以快速更新*/
-	printf("update_mac_time->port:%d,index:%d\n",inport,index);
+	l2dbg("update_mac_time->port:%d,index:%d\n",inport,index);
 }
 
 /**
@@ -123,7 +126,7 @@ void learn_smac(u8 inport,u8 *src_mac)
 	/*更新之前查找空白存储MAC位置*/
 	int i = 0,j = -1;
 
-	printf("learn_smac->\n");
+	l2dbg("learn_smac->\n");
 		
 	for(i= 0;i<NM08_NEIGH_MAX;i++)
 	{
@@ -132,7 +135,7 @@ void learn_smac(u8 inport,u8 *src_mac)
 			if(!ether_addr_equal(src_mac,&nm08_table->mac[i].addr[0]))
 			{
 				/*当前存储空间地址与输入学习的地址相同，则更新此MAC地址的有效时间*/
-				printf("learn_smac->Update TIME!\n");
+				l2dbg("learn_smac->Update TIME!\n");
 				update_mac_time(inport,i);
 				return;
 			}
@@ -145,14 +148,14 @@ void learn_smac(u8 inport,u8 *src_mac)
 	/*此端口已经存储的MAC地址表中找不到需要学习的MAC地址，则取出最后一个空白地址*/
 	if(j == -1)/*有效地址没有空白可用*/
 	{
-		printf("learn_smac->Can't learning more!\n");
+		l2dbg("learn_smac->Can't learning more!\n");
 		return;
 	}
 	/*有空白位置可以存储此新学习的MAC*/
 	memcpy(&nm08_table->mac[j].addr[0],src_mac,MAC_LEN);
 	update_mac_time(inport,j);/*更新此MAC地址的有效时间*/
 	nm08_table->mac[j].valid = 1;/*将MAC地址信息置为有效状态*/
-	printf("learn_smac->add new MAC,port:%d,index:%d\n",inport,j);
+	l2dbg("learn_smac->add new MAC,port:%d,index:%d\n",inport,j);
 }
 
 /**
@@ -193,7 +196,7 @@ int find_dmac(u8 inport,u8 *dst_mac)
 		}
 
 	}
-	printf("find_dmac->ret = %d\n",ret);
+	l2dbg("find_dmac->ret = %d\n",ret);
 	return ret;/*返回-1表示没有学习到，则需要泛洪；返回-2表示输入端口与输出端口一致，不用处理*/
 }
 
@@ -206,7 +209,7 @@ int find_dmac(u8 inport,u8 *dst_mac)
 /*转发单个包*/
 void pkt_send_normal(struct fast_packet *pkt,int pkt_len)
 {
-	printf("pkt_send_normal->%p,outport:%d,len:%d\n",pkt,(int)pkt->um.outport,pkt_len);
+	l2dbg("pkt_send_normal->%p,outport:%d,len:%d\n",pkt,(int)pkt->um.outport,pkt_len);
 	pkt->um.pktsrc = 1;/*报文来源为CPU输入*/
 	pkt->um.pktdst = 0;/*报文目的为硬件输出*/
 	pkt->um.dstmid = 5;/*直接从硬件GOE模块输出，不走解析、查表等模块*/
@@ -223,7 +226,7 @@ void pkt_send_normal(struct fast_packet *pkt,int pkt_len)
 void pkt_send_flood(struct fast_packet *pkt,int pkt_len)
 {
 	int i = 0,inport = pkt->um.inport;/*保存输入端口*/
-	printf("-------pkt_send_flood\n");
+	l2dbg("-------pkt_send_flood\n");
 	for(;i< NM08_PORT_CNT;i++)/*除输入端口外，其他都发送一份*/
 	{
 		if(i != inport)
@@ -262,7 +265,7 @@ void nm08_show_mac_info(void)
 			max_cnt = port_mac_cnt[i];
 	}
 	max_cnt++;/*最后多打印一行空行*/
-	printf("\nID               PORT0              PORT1              PORT2              PORT3\n");
+	l2dbg("\nID               PORT0              PORT1              PORT2              PORT3\n");
 
 	for(j = 0;j<max_cnt;j++)
 	{			
@@ -285,7 +288,7 @@ void nm08_show_mac_info(void)
 				sprintf(buf,"%s                  .",buf);
 			}
 		}
-		printf("%s\n",buf);
+		l2dbg("%s\n",buf);
 	}
 }
 
@@ -321,7 +324,7 @@ void *nm08_mac_aging(void *argv)
 			}
 		}
 		
-		printf("aging[%d]->invalid mac:%d\n",k++,aging_cnt);
+		l2dbg("aging[%d]->invalid mac:%d\n",k++,aging_cnt);
 		aging_cnt = 0;/*统计每次老化MAC地址个数，输出后归零*/
 		sleep(1);/*老化时间误差，每10秒才判断一次。如果提高精度可缩短时间*/
 		nm08_show_mac_info();
@@ -339,12 +342,12 @@ void nm08_start_aging(void)
 	/*创建地址老化处理线程*/
 	if(pthread_create(&tid, NULL, nm08_mac_aging, NULL))
 	{
-		printf("Create nm08_mac_aging thread error!\n");
+		l2dbg("Create nm08_mac_aging thread error!\n");
 		exit(0);
 	}
 	else
 	{
-		printf("Create nm08_mac_aging thread OK!\n");			
+		l2dbg("Create nm08_mac_aging thread OK!\n");			
 	}
 }
 
@@ -362,7 +365,7 @@ int callback(struct fast_packet *pkt,int pkt_len)
 {
 	int outport = -1;
 
-	printf("inport:%d,dstmid:%d,len:%d,dmac:%02X:%02X:%02X:%02X:%02X:%02X,smac:%02X:%02X:%02X:%02X:%02X:%02X\n",(int)pkt->um.inport,pkt->um.dstmid,pkt_len,
+	l2dbg("inport:%d,dstmid:%d,len:%d,dmac:%02X:%02X:%02X:%02X:%02X:%02X,smac:%02X:%02X:%02X:%02X:%02X:%02X\n",(int)pkt->um.inport,pkt->um.dstmid,pkt_len,
 	       pkt->data[0],pkt->data[1],pkt->data[2],pkt->data[3],pkt->data[4],pkt->data[5],
 	       pkt->data[6],pkt->data[7],pkt->data[8],pkt->data[9],pkt->data[10],pkt->data[11]);
 	/*MAC地址学习过程*/
