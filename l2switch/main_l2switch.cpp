@@ -32,406 +32,316 @@
 
 #include "../include/fast.h"
 
-#define NM08_PORT_CNT   4	   /*设备端口数量*/
-#define NM08_NEIGH_MAX  128	   /*每个端口上最大存储邻居MAC个数*/
-#define MAC_LEN 6				/*MAC地址长度*/
-#define MAC_LIFE_TIME 300	   /*MAC地址生命时长为300秒，可调整*/
+#define NM08_PORT_CNT 4	/*设备端口数量*/
+#define NM08_NEIGH_MAX 128 /*每个端口上最大存储邻居MAC个数*/
+#define MAC_LEN 6		   /*MAC地址长度*/
+#define MAC_LIFE_TIME 300  /*MAC地址生命时长为300秒，可调整*/
+#define WAITING_QUEUE 20
 
-// #define l2dbg(args...) printf(args)
-#define l2dbg(args...)
+#include <map>
+#include <queue>
+#include <cassert>
 
-/*端口计数*/
-struct nm08_port_stats
+#define l2dbg(args...) printf(args)
+// #define l2dbg(args...) void(0)
+
+struct mac_struct
 {
-	u64 recv_pkts;
-	u64 recv_bytes;
-	u64 send_pkts;
-	u64 send_bytes;
-};/*32B*/
+  public:
+	u16 data[3];
 
-/*MAC地址，有效位标记和MAC地址学习或更新时间*/
-
-
-struct nm08_port_mac
-{
-	u8  port;	 /*地址所在端口号信息*/
-	u8  valid;	 /*地址有效位标记*/
-	u8  addr[MAC_LEN];  /*存储MAC地址*/	
-	struct timeval tv;  /*存储此MAC的开始有效时间*//*tv.tv_sec储存到期时间*/
-};/*24B*/
-
-/*08的邻居信息表*/
-struct nm08_neigh_table
-{
-	struct nm08_port_stats port[NM08_PORT_CNT];
-	struct nm08_port_mac mac[NM08_NEIGH_MAX];
-};/*32*4+24*128*/
-
-struct nm08_neigh_table *nm08_table = NULL;
-
-/**
-* @brief 
-*
-* @param addr1
-* @param addr2
-*
-* @return 
-*/
-
-/*以一个u8指针的方式传来一个指针，作用是对比指针指的位置的后48位是否一致*/
-/*不一致返回1，一致返回0*/
-/*对比两个MAC地址是否一致*/
-
-int ether_addr_equal(u8 *addr1,u8 *addr2)
-{
-	u16 *a = (u16 *)addr1;
-	u16 *b = (u16 *)addr2;
-	
-	return ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2])) != 0; 
-}
-
-
-/**
-* @brief 
-*
-* @param inport
-* @param index
-*/
-/*更新MAC地址对应的有效时间*/
-void update_mac_time(u8 inport,u8 index)
-{
-	struct timeval tv_now;
-	gettimeofday(&tv_now,NULL);
-	tv_now.tv_sec += MAC_LIFE_TIME;	   /*MAC地址生命周期设置，每次更新，此MAC地址有效时长为300秒，用户可调整*/
-	nm08_table->mac[index].tv = tv_now;/*更新当前时间*/
-	/*
-	if(nm08_table->mac[index].port != inport)
+	bool operator==(const struct mac_struct &rhs) const
 	{
-		//机器换了端口
+		return data[0] == rhs.data[0] && data[1] == rhs.data[1] && data[2] == rhs.data[2];
 	}
-	*/
-	nm08_table->mac[index].port = inport;/*更新MAC所在端口号，有可能是从另外端口拔出，插到了新端口上，如此可以快速更新*/
-	l2dbg("update_mac_time->port:%d,index:%d\n",inport,index);
-}
 
-/**
-* @brief 
-*
-* @param inport
-* @param src_mac
-*/
-/*地址学习过程，将报文的源MAC学习到对应端口MAC表中*/
-void learn_smac(u8 inport,u8 *src_mac)
-{
-	/*更新之前查找空白存储MAC位置*/
-	int i = 0,j = -1;
-
-	l2dbg("learn_smac->\n");
-		
-	for(i= 0;i<NM08_NEIGH_MAX;i++)
+	bool operator<(const struct mac_struct &rhs) const
 	{
-		if (nm08_table->mac[i].valid == 1)/*MAC地址有效*/
+		return data[0] < rhs.data[0] || data[0] == rhs.data[0] && (data[1] < rhs.data[1] || data[1] == rhs.data[1] && data[2] < rhs.data[2]);
+	}
+};
+
+class port_status
+{
+  public:
+	int port;
+	time_t exptime;
+};
+
+class pthread_mutec_locker
+{
+  public:
+	pthread_mutex_t *mutex;
+	pthread_mutec_locker(pthread_mutex_t *_mutex) : mutex(_mutex)
+	{
+		pthread_mutex_lock(mutex);
+	}
+	~pthread_mutec_locker()
+	{
+		pthread_mutex_unlock(mutex);
+	}
+
+	pthread_mutec_locker(const pthread_mutec_locker &) = delete;
+	pthread_mutec_locker &operator=(const pthread_mutec_locker &) = delete;
+};
+
+static char loopdetectpacket_data[128] = {
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xb4, 0x82, 0xe4, 0x67, 0x56, 0xac,
+	0x88, 0xb5
+};
+
+class l2switchinfo
+{
+  public:
+	std::map<mac_struct, port_status> flist;
+	pthread_mutex_t flist_mutex;
+
+	std::queue<struct fast_packet> packets;
+	pthread_mutex_t packets_mutex;
+	pthread_cond_t packets_come;
+	struct fast_packet packet;
+
+	bool packet_loop_detect[NM08_PORT_CNT];
+	bool finished_detection;
+
+	int packet_count;
+
+	void push_packet(const struct fast_packet* packet)
+	{
+		pthread_mutec_locker locker{&packets_mutex};
+		if(packets.size() > WAITING_QUEUE)
+			return;
+		packets.push(*packet);
+		pthread_cond_signal(&packets_come);
+	}
+
+	void pop_packet()
+	{
+		pthread_mutec_locker locker{&packets_mutex};
+		while(packets.empty())
 		{
-			if(!ether_addr_equal(src_mac,&nm08_table->mac[i].addr[0]))
+			pthread_cond_wait(&packets_come, &packets_mutex);
+		}
+		memcpy(&packet, &packets.back(), sizeof(struct fast_packet));
+		packets.pop();
+	}
+
+	l2switchinfo()
+	{
+		l2dbg("init tmux\n");
+		pthread_mutex_init(&flist_mutex, NULL);
+		pthread_mutex_init(&packets_mutex, NULL);
+		pthread_cond_init(&packets_come, NULL);
+		for(int i = 0; i < NM08_PORT_CNT; ++i)
+			packet_loop_detect[i] = false;
+		finished_detection = false;
+		packet_count = 0;
+	}
+
+	void learn(const mac_struct &mac, int port)
+	{
+		l2dbg("learn\n");
+		pthread_mutec_locker locker{&flist_mutex};
+		flist[mac].exptime = time(0) + MAC_LIFE_TIME;
+		flist[mac].port = port;
+	}
+
+	int find(mac_struct &mac)
+	{
+		l2dbg("find\n");
+		pthread_mutec_locker locker{&flist_mutex};
+		auto it = flist.find(mac);
+		if (it == flist.end())
+			return -1;
+		return it->second.port;
+	}
+
+	void exp()
+	{
+		l2dbg("exp\n");
+		time_t now = time(0);
+		pthread_mutec_locker locker{&flist_mutex};
+		for (auto it = flist.cbegin(); it != flist.cend();)
+		{
+			if (it->second.exptime < now)
 			{
-				/*当前存储空间地址与输入学习的地址相同，则更新此MAC地址的有效时间*/
-				l2dbg("learn_smac->Update TIME!\n");
-				update_mac_time(inport,i);
-				return;
-			}
-		}
-		else if(j == -1)/*第一次找到有效可存储MAC地址的索引*/
-		{
-			j = i;/*记录下当前可用的有效位置索引*/
-		}
-	}
-	/*此端口已经存储的MAC地址表中找不到需要学习的MAC地址，则取出最后一个空白地址*/
-	if(j == -1)/*有效地址没有空白可用*/
-	{
-		l2dbg("learn_smac->Can't learning more!\n");
-		return;
-	}
-	/*有空白位置可以存储此新学习的MAC*/
-	memcpy(&nm08_table->mac[j].addr[0],src_mac,MAC_LEN);
-	update_mac_time(inport,j);/*更新此MAC地址的有效时间*/
-	nm08_table->mac[j].valid = 1;/*将MAC地址信息置为有效状态*/
-	l2dbg("learn_smac->add new MAC,port:%d,index:%d\n",inport,j);
-}
-
-/**
-* @brief 
-*
-* @param inport
-* @param dst_mac
-*
-* @return 
-*/
-int find_dmac(u8 inport,u8 *dst_mac)
-{
-	int ret = -1,i = 0;
-	
-	
-	for(;i< NM08_NEIGH_MAX;i++)/*i != inport 表示不在此MAC的输入端口表中查找*/
-	{
-		/*判断地址是否有效，MAC地址是否相等*/
-		/*
-		if (nm08_table->mac[i].valid == 1 &&
-		    nm08_table->mac[i].port != inport &&
-		    !ether_addr_equal(dst_mac,&nm08_table->mac[i].addr[0]))
-		{
-			ret = nm08_table->mac[i].port;// 如果有效且相等，则返回对应的端口号（即输出端口号
-			break;
-		}
-		*/
-		if (nm08_table->mac[i].valid == 1 &&
-		    !ether_addr_equal(dst_mac,&nm08_table->mac[i].addr[0]))
-		{
-			if (nm08_table->mac[i].port != inport){
-				ret = nm08_table->mac[i].port;// 如果有效且相等，则返回对应的端口号（即输出端口号
-			}
-			else{
-				ret = -2; 
-			}
-			break;
-		}
-
-	}
-	l2dbg("find_dmac->ret = %d\n",ret);
-	return ret;/*返回-1表示没有学习到，则需要泛洪；返回-2表示输入端口与输出端口一致，不用处理*/
-}
-
-/**
-* @brief 
-*
-* @param pkt
-* @param pkt_len
-*/
-/*转发单个包*/
-void pkt_send_normal(struct fast_packet *pkt,int pkt_len)
-{
-	l2dbg("pkt_send_normal->%p,outport:%d,len:%d\n",pkt,(int)pkt->um.outport,pkt_len);
-	pkt->um.pktsrc = 1;/*报文来源为CPU输入*/
-	pkt->um.pktdst = 0;/*报文目的为硬件输出*/
-	pkt->um.dstmid = 5;/*直接从硬件GOE模块输出，不走解析、查表等模块*/
-	fast_ua_send(pkt,pkt_len);
-}
-
-/**
-* @brief 
-*
-* @param pkt
-* @param pkt_len
-*/
-/*泛洪转发，会调用转发单个包的函数*/
-void pkt_send_flood(struct fast_packet *pkt,int pkt_len)
-{
-	int i = 0,inport = pkt->um.inport;/*保存输入端口*/
-	l2dbg("-------pkt_send_flood\n");
-	for(;i< NM08_PORT_CNT;i++)/*除输入端口外，其他都发送一份*/
-	{
-		if(i != inport)
-		{
-			pkt->um.outport = i;
-			pkt_send_normal(pkt,pkt_len);
-		}
-	}
-}
-
-/**
-* @brief 
-*/
-/*按照端口收集每一个条目，并进行打印*/
-void nm08_show_mac_info(void)
-{
-	int i = 0,j = 0,max_cnt = 0;
-	char buf[400];
-	int port_mac_cnt[NM08_PORT_CNT] = {0};/*记录每一个端口现在有多少个邻居条目记录*/
-	struct nm08_port_mac mac[NM08_PORT_CNT][NM08_NEIGH_MAX] = {{0}};
-
-	/*将nm08_table中的每一个条目按照端口分类汇总到nm08_port_mac中*/
-	for(;i<NM08_NEIGH_MAX;i++)
-	{
-		if (nm08_table->mac[i].valid == 1)
-		{
-			mac[nm08_table->mac[i].port][port_mac_cnt[nm08_table->mac[i].port]] = nm08_table->mac[i];
-			port_mac_cnt[nm08_table->mac[i].port]++;
-		}
-	}
-	/*记录一个端口最多的MAC地址数量，确定我们最大需要输出几行*/
-	max_cnt = port_mac_cnt[0];
-	for(i=1;i<NM08_PORT_CNT;i++)
-	{
-		if(port_mac_cnt[i] > max_cnt)
-			max_cnt = port_mac_cnt[i];
-	}
-	max_cnt++;/*最后多打印一行空行*/
-	l2dbg("\nID               PORT0              PORT1              PORT2              PORT3\n");
-
-	for(j = 0;j<max_cnt;j++)
-	{			
-		sprintf(buf,"%2d ",j);
-		for(i=0;i< NM08_PORT_CNT;i++)
-		{
-			
-			if (mac[i][j].valid == 1)
-			{
-				sprintf(buf,"%s  %02X:%02X:%02X:%02X:%02X:%02X",buf,
-				        mac[i][j].addr[0],
-				        mac[i][j].addr[1],
-				        mac[i][j].addr[2],
-				        mac[i][j].addr[3],
-				        mac[i][j].addr[4],
-				        mac[i][j].addr[5]);
+				it = flist.erase(it);
 			}
 			else
 			{
-				sprintf(buf,"%s                  .",buf);
+				++it;
 			}
 		}
-		l2dbg("%s\n",buf);
+	}
+
+	void testloop()
+	{
+		l2dbg("loop detection \n");
+		struct fast_packet loopdetectpacket;
+		memset(&loopdetectpacket, 0, sizeof(struct fast_packet));
+		loopdetectpacket.um.pktsrc = 1;
+		loopdetectpacket.um.pktdst = 0;
+		loopdetectpacket.um.dstmid = 5;
+		loopdetectpacket.um.len = sizeof(loopdetectpacket_data);
+		memcpy(loopdetectpacket.data, loopdetectpacket_data, sizeof(loopdetectpacket_data));
+
+		for(int i = 0; i < NM08_PORT_CNT; ++i)
+			packet_loop_detect[i] = false;
+
+		for(int i = 0; i < NM08_PORT_CNT; ++i)
+		{
+			if(packet_loop_detect[i])
+				continue;
+			l2dbg("port %d\n", i);
+			loopdetectpacket.um.outport = i;
+			fast_ua_send(&loopdetectpacket, loopdetectpacket.um.len);
+			sleep(5); // wait for seconds;
+		}
+
+		finished_detection = true;
+	}
+};
+
+static l2switchinfo l2info;
+
+/*转发单个包*/
+void pkt_send_normal(struct fast_packet *pkt, int pkt_len)
+{
+	// l2dbg("pkt_send_normal->%p,outport:%d,len:%d\n",pkt,(int)pkt->um.outport,pkt_len);
+	l2dbg("send %d\n", (int)pkt->um.outport);
+	pkt->um.pktsrc = 1; /*报文来源为CPU输入*/
+	pkt->um.pktdst = 0; /*报文目的为硬件输出*/
+	pkt->um.dstmid = 5; /*直接从硬件GOE模块输出，不走解析、查表等模块*/
+	fast_ua_send(pkt, pkt_len);
+}
+
+/*泛洪转发，会调用转发单个包的函数*/
+void pkt_send_flood(struct fast_packet *pkt, int pkt_len)
+{
+	int i = 0, inport = pkt->um.inport; /*保存输入端口*/
+	// l2dbg("-------pkt_send_flood\n");
+	l2dbg("flood\n");
+	for (; i < NM08_PORT_CNT; i++) /*除输入端口外，其他都发送一份*/
+	{
+		if (i != inport && !l2info.packet_loop_detect[i])
+		{
+			pkt->um.outport = i;
+			pkt_send_normal(pkt, pkt_len);
+		}
 	}
 }
 
-/**
-* @brief 
-*
-* @param argv
-*
-* @return 
-*/
 /*MAC地址老化处理线程*/
 void *nm08_mac_aging(void *argv)
 {
-	struct timeval tv_now;
-	int i = 0,k = 0,aging_cnt = 0;
+	while (1)
+	{
+		sleep(10);
+		l2info.exp();
+	}
+}
+
+void *process_pkt(void *argv)
+{
+	struct fast_packet *pkt;
+	int pkt_len;
 
 	while(1)
 	{
-		gettimeofday(&tv_now,NULL);
+		l2info.pop_packet();
+		pkt = &l2info.packet;
+		pkt_len = pkt->um.len;
 
-		for(i = 0;i<NM08_NEIGH_MAX;i++)
+		l2dbg("\n%08d %d %d %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X\n", l2info.packet_count++, pkt_len,(int)pkt->um.inport,
+			pkt->data[6], pkt->data[7], pkt->data[8], pkt->data[9], pkt->data[10], pkt->data[11],
+			pkt->data[0], pkt->data[1], pkt->data[2], pkt->data[3], pkt->data[4], pkt->data[5]);
+
+		if(pkt->um.len == sizeof(loopdetectpacket_data) && memcmp(pkt->data, loopdetectpacket_data, sizeof(loopdetectpacket_data)) == 0)
 		{
-			/*判断地址是否有效*/
-			if (nm08_table->mac[i].valid == 1)
-			{
-				/*此处仅用秒来做比较，如果需要更高精度可将微秒加入再比较*/
-				if(nm08_table->mac[i].tv.tv_sec < tv_now.tv_sec)
-				{
-					/*此MAC地址的有效时间已到*/
-					nm08_table->mac[i].valid = 0;
-					aging_cnt++;
-				}
-			}
+			l2dbg("\nloop detected %d\n", (int)pkt->um.inport);
+			l2info.packet_loop_detect[pkt->um.inport] = true;
+			continue;
 		}
-		
-		l2dbg("aging[%d]->invalid mac:%d\n",k++,aging_cnt);
-		aging_cnt = 0;/*统计每次老化MAC地址个数，输出后归零*/
-		sleep(1);/*老化时间误差，每10秒才判断一次。如果提高精度可缩短时间*/
-		nm08_show_mac_info();
+
+		if(!l2info.finished_detection)
+			continue;
+
+		if(l2info.packet_loop_detect[pkt->um.inport])
+		{
+			l2dbg("\nloop packet dropped %d\n", (int)pkt->um.inport);
+			continue;
+		}
+
+		l2info.learn(*(mac_struct *)&pkt->data[MAC_LEN], pkt->um.inport);
+		int oport = l2info.find(*(mac_struct *)&pkt->data[0]);
+		if (oport == -1)
+		{
+			pkt_send_flood(pkt, pkt_len);
+		}
+		else if (oport == pkt->um.inport)
+		{
+		}
+		else
+		{
+			pkt->um.outport = oport;
+			pkt_send_normal(pkt, pkt_len);
+		}
 	}
 }
 
-/**
-* @brief 
-*/
-/*创建老化处理线程*/
-void nm08_start_aging(void)
-{	
-	pthread_t tid;
-
-	/*创建地址老化处理线程*/
-	if(pthread_create(&tid, NULL, nm08_mac_aging, NULL))
+void *looptest(void *argv)
+{
+	while(true)
 	{
-		l2dbg("Create nm08_mac_aging thread error!\n");
-		exit(0);
-	}
-	else
-	{
-		l2dbg("Create nm08_mac_aging thread OK!\n");			
+		l2info.testloop();
+		sleep(30);
 	}
 }
-
-/**
-* @brief 
-*
-* @param pkt
-* @param pkt_len
-*
-* @return 
-*/
 
 /*报文查表寻找目标端口、更新mac地址表和发送流程*/
-int callback(struct fast_packet *pkt,int pkt_len)
+int callback(struct fast_packet *pkt, int pkt_len)
 {
-	int outport = -1;
+	assert((int)pkt->um.len == pkt_len);
+	l2info.push_packet(pkt);
 
-	l2dbg("inport:%d,dstmid:%d,len:%d,dmac:%02X:%02X:%02X:%02X:%02X:%02X,smac:%02X:%02X:%02X:%02X:%02X:%02X\n",(int)pkt->um.inport,pkt->um.dstmid,pkt_len,
-	       pkt->data[0],pkt->data[1],pkt->data[2],pkt->data[3],pkt->data[4],pkt->data[5],
-	       pkt->data[6],pkt->data[7],pkt->data[8],pkt->data[9],pkt->data[10],pkt->data[11]);
-	/*MAC地址学习过程*/
-	learn_smac(pkt->um.inport,&pkt->data[MAC_LEN]);/*用源MAC位置开始学习*/
-
-	/*查表过程*/
-	outport = find_dmac(pkt->um.inport,pkt->data);/*用目的MAC地址开始查表*/
-
-	/*发送报文*/
-	if(outport == -1)/*报文需要泛洪操作*/
-	{
-		pkt_send_flood(pkt,pkt_len);/*泛洪发送，保留输入端口不变调用*/
-	}
-	else if(outport != -2)/*正常转发*/
-	{
-		pkt->um.outport = outport;/*修改报文输出端口号*/
-		pkt_send_normal(pkt,pkt_len);/*正常发送报文*/
-	}
 	return 0;
 }
 
-/**
-* @brief 
-*/
 void ua_init(void)
 {
 	int ret = 0;
 	/*向系统注册，自己进程处理报文模块ID为1的所有报文*/
-	if((ret=fast_ua_init(129,callback)))//UA模块实例化(输入参数1:接收模块ID号,输入参数2:接收报文的回调处理函数)
+	if ((ret = fast_ua_init(129, callback))) //UA模块实例化(输入参数1:接收模块ID号,输入参数2:接收报文的回调处理函数)
 	{
 		perror("fast_ua_init!\n");
-		exit (ret);//如果初始化失败,则需要打印失败信息,并将程序结束退出!
+		exit(ret); //如果初始化失败,则需要打印失败信息,并将程序结束退出!
 	}
 }
 
-/**
-* @brief 
-*
-* @param argc
-* @param argv[]
-*
-* @return 
-*/
-int main(int argc,char* argv[])
+int main(int argc, char *argv[])
 {
-	/*申请地址表存储空间*/
-	nm08_table = (struct nm08_neigh_table *)malloc(sizeof(struct nm08_neigh_table));
-	/*空间清零*/
-	memset(nm08_table,0,sizeof(struct nm08_neigh_table));
-
 	/*初始化平台硬件*/
-	fast_init_hw(0,0);	
-	
+	fast_init_hw(0, 0);
+
 	/*UA模块初始化	*/
 	ua_init();
-	
-	/*配置硬件规则，将硬件所有报文送到模块ID为1的进程处理*/
-	init_rule(ACTION_SET_MID<<28|129);
 
-	/*启动地址学习表老化线程*/
-	nm08_start_aging();
-	
+	/*配置硬件规则，将硬件所有报文送到模块ID为1的进程处理*/
+	init_rule(ACTION_SET_MID << 28 | 129);
+
+	pthread_t tid;
+	pthread_create(&tid, NULL, looptest, NULL);
+	pthread_create(&tid, NULL, nm08_mac_aging, NULL);
+	pthread_create(&tid, NULL, process_pkt, NULL);
+
 	/*启动线程接收分派给UA进程的报文*/
 	fast_ua_recv();
-	
+
 	/*主进程进入循环休眠中,数据处理主要在回调函数*/
-	while(1){sleep(9999);}
+	while (1)
+	{
+		sleep(9999);
+	}
 	return 0;
 }

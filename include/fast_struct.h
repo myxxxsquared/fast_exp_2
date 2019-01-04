@@ -31,7 +31,7 @@
 #ifndef __FAST_STRUCT_H__
 #define __FAST_STRUCT_H__
 
-#pragma pack(1)
+#pragma pack(push, 1)
 
 
 
@@ -426,3 +426,5 @@ struct ua_pkt_remote
 
 int remote_control_handle; /*remote control socket handle*/
 struct sockaddr_in remote_info;
+
+#pragma pack(pop)

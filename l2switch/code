@@ -1,0 +1,75 @@
+#include <map>
+#include <queue>
+
+struct mac_struct
+{
+public:
+	u16 data[3];
+
+	bool operator==(const struct mac_struct &rhs) const
+	{
+		return data[0] == rhs.data[0] && data[1] == rhs.data[1] && data[2] == rhs.data[2];
+	}
+
+	bool operator<(const struct mac_struct &rhs) const
+	{
+		return data[0] < rhs.data[0] || data[0] == rhs.data[0] && (data[1] < rhs.data[1] || data[1] == rhs.data[1] && data[2] < rhs.data[2]);
+	}
+};
+
+class port_status
+{
+public:
+	int port;
+	time_t exptime;
+
+	port_status(){}
+	port_status(int _port, time_t _exptime) : port(_port), exptime(_exptime) {}
+};
+
+class cmp_exptime{
+public:
+	std::map<mac_struct, port_status> *pflist;
+
+	cmp_exptime(std::map<mac_struct, port_status> *_pflist) : pflist(_pflist) {}
+
+	bool operator()(const struct mac_struct &lhs, const struct mac_struct &rhs) const
+	{
+		return (*pflist)[lhs].exptime < (*pflist)[rhs].exptime;
+	}
+};
+
+class l2switchinfo
+{
+	std::map<mac_struct, port_status> flist;
+	std::priority_queue<mac_struct, std::vector<mac_struct>, cmp_exptime> explist;
+
+	l2switchinfo() : flist(), explist(cmp_exptime(&flist)) {}
+
+	void learn(mac_struct &mac, int port)
+	{
+		flist[mac].exptime = time(0) + MAC_LIFE_TIME;
+		flist[mac].port = port;
+	}
+};
+
+
+	// struct fast_rule rule1,rule2;
+	// memset(&rule1, 0, sizeof(struct fast_rule));
+	// memset(&rule2, 0, sizeof(struct fast_rule));
+
+	// rule1.mask.port = (u8)(unsigned int)-1;
+	// rule1.key.port = 0;
+	// rule1.valid = 1;
+	// rule1.action = ACTION_PORT<<28|1;
+
+	// rule2.mask.port = (u8)(unsigned int)-1;
+	// rule2.key.port = 1;
+	// rule2.valid = 1;
+	// rule2.action = ACTION_PORT<<28|0;
+	// rule2.md5[0] = 1;
+
+	// printf("write rule\n");
+	// fast_add_rule(&rule1);
+	// fast_add_rule(&rule2);
+	

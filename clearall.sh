@@ -1,19 +1,4 @@
-scp l2switch root@openbox:/mnt/my
-ssh root@openbox
-
-insmod /mnt/openbox/openbox-s4.ko
-/mnt/my/l2switch
-
-sudo ifconfig enxb827ebf8791b down
-sudo ifconfig enxb827ebf8791b 192.168.2.1
-
-sudo ifconfig enxb827ebacccda down
-sudo ifconfig enxb827ebacccda 192.168.2.2
-
-
-
-iperf -s
-iperf -c 192.168.2.1
+set -x
 
 rm -r autom4te.cache/
 rm l2switch/l2switch
@@ -34,3 +19,4 @@ find -name 'Makefile.in' | xargs rm
 find -name '*.o' | xargs rm
 find -name '*.a' | xargs rm
 find -name '.deps/' | xargs rm -r
+

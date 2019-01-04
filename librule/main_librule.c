@@ -402,6 +402,7 @@ int fast_add_rule(struct fast_rule *rule)
 	{
 		if(idx != -1)
 		{
+			printf("wirte: %d\n", idx);
 			table.rules[idx] = *rule;//将用户规则存入当前索引的规则位置		
 			table.cnt++;//规则数目增加一条
 			write_rule(idx,1);/*将此规则写入硬件,将规则置为有效状态*/
@@ -409,6 +410,7 @@ int fast_add_rule(struct fast_rule *rule)
 		}
 		else
 		{
+			printf("wirte failed: %d\n", idx);
 			return -E_RULE_INDEX_OVERFLOW;
 		}
 	}
