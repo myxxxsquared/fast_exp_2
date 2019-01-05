@@ -18,5 +18,5 @@ find -name 'Makefile' | xargs rm
 find -name 'Makefile.in' | xargs rm
 find -name '*.o' | xargs rm
 find -name '*.a' | xargs rm
-find -name '.deps/' | xargs rm -r
+find -name '.deps' | xargs rm -r
 
