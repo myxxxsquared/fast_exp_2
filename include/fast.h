@@ -14,6 +14,9 @@
  * fast.h
  *
  * Copyright (C) 2017 - XuDongLai
+ * Copyright (C) 2019 - Zhang Wenjie
+ * 
+ * 增加对于C++的兼容性
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
