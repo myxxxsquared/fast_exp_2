@@ -363,7 +363,7 @@ void l2switchinfo::pop_packet()
 	{
 		pthread_cond_wait(&packets_come, &packets_mutex);
 	}
-	memcpy(&packet, &packets.back(), sizeof(struct fast_packet));
+	memcpy(&packet, &packets.front(), sizeof(struct fast_packet));
 	packets.pop();
 }
 
